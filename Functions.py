@@ -11,8 +11,6 @@
 #   and spot_phi = np.pi/2 is pole on. 
 
 
-
-
 #------------------------------ Import Packages-------------------------------#
 
 ################
@@ -474,7 +472,7 @@ def get_data(radii, spot_thetas, spot_phis, contrast, obs_phi, n_observations,
         
         return (observed_data, clean_data, sigmas)
 
-def MSH_to_input_radii(MSH):
+def MSH_to_input_radii(MSH): # shouldn't there be a factor of pi here?
     '''
     ===========================================================================
     A function that transforms spots measured in micro-solar hemispheres (MSH)
@@ -486,7 +484,7 @@ def MSH_to_input_radii(MSH):
     '''
     return np.arcsin(np.sqrt(MSH/1e6))
 
-def input_radii_to_MSH(r):
+def input_radii_to_MSH(r):# shouldn't there be a factor of pi here?
     '''
     ===========================================================================
     A function that transforms spots measured in radians to units of 
@@ -503,7 +501,9 @@ def spot_decay_logNormal(area, time, timestep = 30):
 
     This function simulates the decay of solar spot areas based on a log-normal 
     decay model. The decay rate is randomly generated and constrained to a minimum 
-    value.
+    value. This function is based equation 4 from Baumann and Solanki 2005 
+    "On the size distribution of sunspot groups in the Greenwich sunspot record
+    1874-1976"
 
     ---------------------------------------------------------------------------
     area    - An array representing the initial area of solar spots in 
@@ -523,8 +523,6 @@ def spot_decay_logNormal(area, time, timestep = 30):
     -----
     - The decay is computed based on a log-normal distribution with a mean 
       of 1.75 and a standard deviation derived from a variance of 2. 
-    - The decay applied cannot reduce the area below zero; any negative 
-      values are clamped to zero.
       
     """
 
@@ -536,3 +534,120 @@ def spot_decay_logNormal(area, time, timestep = 30):
     new_area[new_area < 0] = 0
     new_area = new_area**2
     return new_area.T
+
+def get_spot_sizes(n, reject_small = True, method = 'Nagovitsyn', scale = 1,
+                   mean = None, sigma = None):
+    '''
+    ===========================================================================
+    This function returns sunspot sizes in radians (radii), based off of a
+    log-normal distribution
+    ---------------------------------------------------------------------------
+    n            - number of spots to return
+    reject_small - if True, spots below 0.02 radians will be removed.
+    method       - selects spot size distribution, see notes for more detail
+    scale        - modifies the RADIUS of the spot size
+    mean         - if method is None (or invalid), this value will be used for
+                   the mean of the log-normal size distribution
+    sigma        - if method is None (or invalid), this value will be used for
+                   the standard deviation of the log-normal size distribution
+    ---------------------------------------------------------------------------
+    NOTES: Nagovitsyn method is based off of the value reported in 
+           Nagovitsyn and Petsov 2016 - "On the presence of two populations of
+           sunspots". Here, it uses the log-normal distribution for the long
+           lived (larger) spots. These spots make up about 50% of all spots, and
+           if this method is use, n should be adjusted
+           
+           The Baumann values come from Table 1 in Baumann and Solanki 2005 -
+           "On the size distribution of sunspot groups in the Greenwich sunspot
+           record 1874-1976"
+    ===========================================================================
+    '''
+    if method == 'Nagovitsyn':
+        mean  = np.log(10**2.377)
+        sigma = np.log(10**0.414)
+        
+    elif method == 'Baumann Single Max':
+        mean  = np.log(45.5)
+        sigma = np.log(2.11)
+        
+    elif method == 'Baumann Single Snapshot':
+        mean  = np.log(30.2)
+        sigma = np.log(2.14)
+    
+    elif method == 'Baumann Group Max':
+        mean  = np.log(62.2)
+        sigma = np.log(2.45)
+        
+    elif method == 'Baumann Group Snapshot':
+        mean  = np.log(58.6)
+        sigma = np.log(2.49)
+        
+    else:
+        if mean or sigma == None:
+            print('Either choose a method, or specify a mean and sigma for a log-normal dist')
+        
+    areas = np.random.lognormal(mean = mean, sigma = sigma, size = n)
+    radii_radians = MSH_to_input_radii(areas) * scale
+    
+    if reject_small == True:
+        radii_radians = radii_radians[radii_radians >= 0.02] 
+    
+    return radii_radians
+        
+    
+def spot_butterfly_distribution(size, mean = None, sigma = None):
+    '''
+    ===========================================================================
+    Returns a series of latitudes for sun-spots, following a static butterfly
+    diagram (i.e. a double gaussian). The default values come from Ivanov et al.
+    2011 - "Form of the latitude distribution of sunspot activity". The values
+    are the average values from the table on pg 915
+    ---------------------------------------------------------------------------
+    size  - the number of latitudes wanted
+    mean  - mean of normal distrubtion
+    sigma - the standard deviation of the normal distribution
+    ---------------------------------------------------------------------------
+    NOTE: This function does not take into account the time varying latitudinal
+          distribution. The paper listed above has good model based on activity.
+    '''
+    
+    if mean == None and sigma == None:
+        mean  = 14.9
+        sigma = 6.1 
+
+    latitudes = np.random.normal(loc = mean, scale = sigma, size = size)
+    sign = 2*np.random.randint(0,2,size=size)-1
+    
+    return sign*latitudes
+
+def spot_uniform_distribution(size):
+    '''
+    ===========================================================================
+    Returns latitudes of size (size) sampled uniformly in latitude, adjust
+    so that each latitude probability is proportional to its relative size.
+    I.e. latitudes near the equator are more likely than higher latitudes
+    '''
+    return np.arccos(np.random.uniform(low = -1, high = 1, size = size))
+
+def spot_latitude_selection(size, method = 'butterfly', mean = None, sigma = None):
+    '''
+    ==============================================================================
+    A wrapper function that selects from available spot latitude distributions
+    ------------------------------------------------------------------------------
+    method - must be either 'butterfly' or 'uniform', which will call
+             'spot_butterfly_distribution' and 'spot_latitude_distribution' functions
+             respectively.
+    
+    '''
+    if method == 'butterfly':
+        return spot_butterfly_distribution(size, mean, sigma)
+    elif method == 'uniform':
+        if mean != None or sigma != None:
+            print('Warning: Uniform method does not take a mean or sigma argument')
+        return spot_uniform_distribution(size)
+    else:
+        print('Invalid selection')
+        
+def get_spot_numbers(method = , scale = 1):
+    # TODO
+    if method 
