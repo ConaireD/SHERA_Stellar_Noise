@@ -122,6 +122,7 @@ def limb_darkening(x,y, u1 = -0.47, u2 = -0.23):
     
     return limb_darkening_map
 
+
 def generate_surface_points(num_pts, number_observations):
     '''
     ===========================================================================
@@ -472,6 +473,7 @@ def get_data(radii, spot_thetas, spot_phis, contrast, obs_phi, n_observations,
         
         return (observed_data, clean_data, sigmas)
 
+@jit()
 def MSH_to_input_radii(MSH): # shouldn't there be a factor of pi here?
     '''
     ===========================================================================
@@ -484,6 +486,7 @@ def MSH_to_input_radii(MSH): # shouldn't there be a factor of pi here?
     '''
     return np.arcsin(np.sqrt(MSH/1e6))
 
+@jit()
 def input_radii_to_MSH(r):# shouldn't there be a factor of pi here?
     '''
     ===========================================================================
@@ -535,6 +538,7 @@ def spot_decay_logNormal(area, time, timestep = 30):
     new_area = new_area**2
     return new_area.T
 
+@jit()
 def get_spot_sizes(n, reject_small = True, method = 'Nagovitsyn', scale = 1,
                    mean = None, sigma = None):
     '''
@@ -554,8 +558,8 @@ def get_spot_sizes(n, reject_small = True, method = 'Nagovitsyn', scale = 1,
     NOTES: Nagovitsyn method is based off of the value reported in 
            Nagovitsyn and Petsov 2016 - "On the presence of two populations of
            sunspots". Here, it uses the log-normal distribution for the long
-           lived (larger) spots. These spots make up about 50% of all spots, and
-           if this method is use, n should be adjusted
+           lived (larger) spots. These spots make up about 40-60% of all spots,
+           and if this method is use, n should be adjusted
            
            The Baumann values come from Table 1 in Baumann and Solanki 2005 -
            "On the size distribution of sunspot groups in the Greenwich sunspot
@@ -563,8 +567,8 @@ def get_spot_sizes(n, reject_small = True, method = 'Nagovitsyn', scale = 1,
     ===========================================================================
     '''
     if method == 'Nagovitsyn':
-        mean  = np.log(10**2.377)
-        sigma = np.log(10**0.414)
+        mean  = np.log(10**2.377) # ~ np.log(238)
+        sigma = np.log(10**0.414) # ~ np.log(
         
     elif method == 'Baumann Single Max':
         mean  = np.log(45.5)
@@ -594,7 +598,6 @@ def get_spot_sizes(n, reject_small = True, method = 'Nagovitsyn', scale = 1,
     
     return radii_radians
         
-    
 def spot_butterfly_distribution(size, mean = None, sigma = None):
     '''
     ===========================================================================
@@ -607,8 +610,10 @@ def spot_butterfly_distribution(size, mean = None, sigma = None):
     mean  - mean of normal distrubtion
     sigma - the standard deviation of the normal distribution
     ---------------------------------------------------------------------------
+    returns latitude in DEGREES
     NOTE: This function does not take into account the time varying latitudinal
           distribution. The paper listed above has good model based on activity.
+    ===========================================================================
     '''
     
     if mean == None and sigma == None:
@@ -626,18 +631,19 @@ def spot_uniform_distribution(size):
     Returns latitudes of size (size) sampled uniformly in latitude, adjust
     so that each latitude probability is proportional to its relative size.
     I.e. latitudes near the equator are more likely than higher latitudes
+    ===========================================================================
     '''
     return np.arccos(np.random.uniform(low = -1, high = 1, size = size))
 
 def spot_latitude_selection(size, method = 'butterfly', mean = None, sigma = None):
     '''
-    ==============================================================================
+    ===========================================================================
     A wrapper function that selects from available spot latitude distributions
-    ------------------------------------------------------------------------------
+    ---------------------------------------------------------------------------
     method - must be either 'butterfly' or 'uniform', which will call
-             'spot_butterfly_distribution' and 'spot_latitude_distribution' functions
-             respectively.
-    
+             'spot_butterfly_distribution' and 'spot_latitude_distribution' 
+             functions respectively.
+    ===========================================================================
     '''
     if method == 'butterfly':
         return spot_butterfly_distribution(size, mean, sigma)
@@ -648,6 +654,3 @@ def spot_latitude_selection(size, method = 'butterfly', mean = None, sigma = Non
     else:
         print('Invalid selection')
         
-def get_spot_numbers(method = , scale = 1):
-    # TODO
-    if method 
