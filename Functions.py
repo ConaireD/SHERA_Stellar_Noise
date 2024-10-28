@@ -1074,9 +1074,15 @@ def make_observations_parallel(n_rotations, num_spots, radii_method, radii_probs
                              n_observations=10, return_full_data=False,
                              suppress_output=True, n_processes=None):
     """
+    ===========================================================================
     Parallelized version of make_observations function.
     Additional parameter:
     n_processes: Number of processes to use. If None, uses all available CPU cores.
+    ---------------------------------------------------------------------------
+    NOTE: This function was written with Claude.ai. There may be errors, 
+    especially with the order of the results. However, this likely isn't relevant
+    to most use cases (i.e np.std does not care about order).
+    ===========================================================================
     """
     obs_phi = np.cos(obs_phi)
     if n_observations == 1:
