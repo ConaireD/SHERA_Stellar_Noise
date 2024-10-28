@@ -37,6 +37,7 @@ import matplotlib.pyplot as plt
 import warnings
 warnings.filterwarnings('ignore')
 import timeit
+from tqdm.notebook import tqdm
 
 #------------------------------ Functions -------------------------------#
 
@@ -654,3 +655,35 @@ def spot_latitude_selection(size, method = 'butterfly', mean = None, sigma = Non
     else:
         print('Invalid selection')
         
+def bootstrap(data, n_boots = 10000, c_level = 0.95, return_CI = False):
+    '''
+    ===========================================================================
+    A function to bootstrap data to estimate uncertainties
+    ---------------------------------------------------------------------------
+    data      - A 1d array or list of the data to bootstrap
+    n_boots   - The number of bootstrap samples to do, default = 10000
+    c_level   - The confidence level to calculate, if return_CI = True
+    return_CI - Bool. If true, returns confidence interval. Defaults False.
+    ---------------------------------------------------------------------------
+    Returns - std_error if return_CI = False
+            - std_error, (ci_lower, ci_upper), if return_CI = True
+    '''
+    data = np.array(data)
+    n_samples = len(data)
+    
+    bootstrap_stds = np.zeros(n_boots)
+    
+    # Do bootstrapping
+    for i in tqdm(range(n_boots)):
+        bootstrap_sample = np.random.choice(data, size=n_samples, replace=True)
+        bootstrap_stds[i] = np.std(bootstrap_sample)
+
+    std_error = np.std(bootstrap_stds, ddof=1)
+
+    if return_CI == True:
+        ci_lower = np.percentile(bootstrap_stds, (1 - c_level) * 100 / 2)
+        ci_upper = np.percentile(bootstrap_stds, (1 + c_level) * 100 / 2)
+        return std_error, (ci_lower, ci_upper)
+    else:
+        return std_error
+
