@@ -1,3 +1,16 @@
+#======================================================#
+#                      Preamble                        #
+#======================================================#
+
+# This code was written by Conaire Deagan, a PhD
+# candidate at the University of New South Wales (UNSW)
+# Email: c.deagan@unsw.edu.au
+# Repository: github.com/ConaireD/SHERA_Stellar_Noise
+# Feel free to reach out for assistance with this, or
+# with any feature requests.
+# I make no guarentees that this code is any good
+# this code has not been comphrensively tests.
+
 #=======================================================#
 # These are the custom functions needed for the         #
 # SHERA_Stellar_Noise jupyter files                     #
@@ -11,7 +24,7 @@
 #   and spot_phi = np.pi/2 is pole on. 
 
 
-#------------------------------ Import Packages-------------------------------#
+#----------------------- Import Packages---------------------------#
 
 ################
 # Mathematical #
@@ -655,7 +668,7 @@ def spot_latitude_selection(size, method = 'butterfly', mean = None, sigma = Non
     else:
         print('Invalid selection')
         
-def bootstrap(data, n_boots = 10000, c_level = 0.95, return_CI = False):
+def bootstrap(data, n_boots = 10000, c_level = 0.95, return_CI = False, suppress_output = True):
     '''
     ===========================================================================
     A function to bootstrap data to estimate uncertainties
@@ -664,6 +677,9 @@ def bootstrap(data, n_boots = 10000, c_level = 0.95, return_CI = False):
     n_boots   - The number of bootstrap samples to do, default = 10000
     c_level   - The confidence level to calculate, if return_CI = True
     return_CI - Bool. If true, returns confidence interval. Defaults False.
+    suppress_output - Bool. Defaults to true. Disables tqdm output. Users not on
+                  computing clusters should set this to be false.
+
     ---------------------------------------------------------------------------
     Returns - std_error if return_CI = False
             - std_error, (ci_lower, ci_upper), if return_CI = True
@@ -674,11 +690,11 @@ def bootstrap(data, n_boots = 10000, c_level = 0.95, return_CI = False):
     bootstrap_stds = np.zeros(n_boots)
     
     # Do bootstrapping
-    for i in tqdm(range(n_boots)):
+    for i in tqdm(range(n_boots), desc = 'Bootstrapping...', disable = suppress_output):
         bootstrap_sample = np.random.choice(data, size=n_samples, replace=True)
         bootstrap_stds[i] = np.std(bootstrap_sample)
 
-    std_error = np.std(bootstrap_stds, ddof=1)
+    std_error = np.std(bootstrap_stds)
 
     if return_CI == True:
         ci_lower = np.percentile(bootstrap_stds, (1 - c_level) * 100 / 2)
@@ -687,3 +703,356 @@ def bootstrap(data, n_boots = 10000, c_level = 0.95, return_CI = False):
     else:
         return std_error
 
+def custom_radii_method_builder(radii_method_ls, radii_probs):
+    '''
+    ===========================================================================
+    A function that returns a custom get_spot_sizes function.
+    ---------------------------------------------------------------------------
+    radii_method_ls - A list of methods to use. If the method is a string,
+                      then that string is passed to get_spot_sizes as a method.
+                      Else, the method must be a tuple of length 3 or 4. If 
+                      length three, must be of the form (method, reject_small, scale)
+                      and if length 4, must be of the form
+                      (reject_small, mean, std, scale).
+    radii_probs     - An array of probabilities for each method. Must sum to 1. 
+    ---------------------------------------------------------------------------
+    Note: Used in the make_observation function.
+    ===========================================================================
+    '''
+    if not np.isclose(np.sum(radii_probs),  1):
+        raise ValueError("Sum of probabilities must = 1")
+
+    def custom_radii_method(n_spots):
+        
+        # create a cumulative prob distribution, then choose random number
+        cum_probs = np.cumsum(radii_probs)
+        die_roll = np.random.uniform()
+
+        # Based on random number, choose method
+        # if random number is p_r, then the method chosen will be
+        # p_1 + ... + p_n < p_r < p_1 + ... + p_n + p_(n+1)
+        # where p_n is in radii_probs
+        for i, threshold in enumerate(cum_probs):
+            # choose method
+            if die_roll < threshold:
+                temp_radii_method = radii_method_ls[i]
+                # decode method input
+                if type(temp_radii_method) == str:
+                    radii = get_spot_sizes(n_spots, method = temp_radii_method)
+                    return radii
+
+                elif (type(temp_radii_method) == tuple) &  (len(temp_radii_method) == 3):
+                    method, reject_small, scale = temp_radii_method
+                    radii = get_spot_sizes(n_spots, method = method,
+                                           reject_small = reject_small,
+                                           scale = scale)
+                    return radii
+
+                elif (type(temp_radii_method) == tuple) &  (len(temp_radii_method) == 4):
+                    reject_small, mean, std, scale = temp_radii_method
+                    radii = get_spot_sizes(n_spots, reject_small = reject_small,
+                                           mean = mean, sigma = std,
+                                           scale = scale)
+                    return radii
+
+                else:
+                    raise ValueError('Error in radii_method construction')
+    return custom_radii_method
+
+def custom_latitude_dist_builder(latitude_method):
+    '''
+    ===========================================================================
+    A function that returns a custom spot_latitude_selection function.
+    ---------------------------------------------------------------------------
+    radii_method_ls - A string or tuple of the form described in 
+                     'make_observations'
+    ---------------------------------------------------------------------------
+    Note: This function is probably needlessly complicated currently, but should
+    hopefully allow for better expansion of latitudes if need be.
+    ===========================================================================
+    '''
+
+    if len(latitude_method) == 1:
+        if type(latitude_method[0]) == str:
+            if latitude_method[0] == 'butterfly':
+                # user wants to use default butterfly
+                def custom_lat_fn(n_spots):
+                    return spot_latitude_selection(n_spots, method = 'butterfly')
+                
+            elif latitude_method[0] == 'uniform':
+                # user wants to use uniform dist
+                
+                def custom_lat_fn(n_spots):
+                    return spot_latitude_selection(n_spots, method = 'uniform')
+
+            else:
+                raise ValueError('''
+                Unrecognised latitude method. Supported methods are 'butterfly'
+                or 'uniform'
+                ''')     
+
+    elif type(latitude_method) == tuple:
+        if len(latitude_method) != 2:
+            raise  ValueError('''
+            latitude_method must either be a string, or a tuple of the form
+            (method, (**params))
+            ''')
+        else:
+            method = latitude_method[0]
+            params = latitude_method[1]
+            if method == 'butterfly':
+                try:
+                    l_mean = params[0]
+                    l_std  = params[1]
+                    # User wants custom butterfly method
+                    
+                    def custom_lat_fn(n_spots):
+                        return spot_latitude_selection(n_spots,
+                                                       method = 'butterfly',
+                                                       mean = l_mean,
+                                                       sigma= l_std)
+
+                except:
+                    raise  ValueError('''
+                Incorrectly formatted parameters to latitude method
+                ''')
+
+            else:
+                raise  ValueError('''
+            Currently unsupported latitude_method. 
+            ''')
+    else:
+        raise  ValueError('latitude method must be a string or tuple')
+        
+    return custom_lat_fn        
+
+                     
+def make_observations(n_rotations, num_spots, radii_method, radii_probs,
+                      latitude_method, obs_phi, num_surf_pts = 350**2, do_bootstrap = True,
+                      num_spots_type = 'Number', spot_contrasts = 0.7, 
+                      longitude_type = 'Random', n_observations = 10, 
+                      return_full_data = False, suppress_output = True):
+    '''
+    ===========================================================================
+    A single large flexible function that wraps many other functions that 
+    generates astrometric jitter data.
+    ---------------------------------------------------------------------------
+    n_rotations     - The number of stellar rotations to model. Must be an int,
+                     or None. If None, then num_spots must be a time series of
+                     spot numbers, and the number of stellar rotations will be
+                     inferred from the length of that list/array.
+    num_spots       - The number of spots to model each rotation. If an int,
+                     this number will be used each time, and num_spots_type must
+                     be 'Number'. If a tuple, this must be of the form
+                     (mean, std) and num_spots_type must be 'Gauss Dist'. If
+                     an array, num_spots_type must be either 'Dist' or 
+                     'Time Series'. If 'Dist', the spots will be randomly sampled
+                     from the given array. If 'Time Series', each rotation will 
+                     choose a sequential spot number.
+    radii_method    - Must be a string, or a list of strings and tuples. Strings
+                     must match options given in 'get_spot_sizes'. tuples must be
+                     of the form (reject_small, mean, std, scale) or 
+                     (method, reject_small, scale) to be passed to a logNormal
+                     distribution
+    radii_probs     - An array of probabilties to be assigned to each radii method.
+                     Must be the same size as radii_method
+    latitude_method - The method by which spot latitudes are calculated. Must be
+                     either a str, or a tuple. If a string, must be either
+                     'butterfly' or 'uniform'. If a tuple, must be of the form
+                     (method, (**params)).
+    obs_phi         - The inclination of the star in radians 
+    num_surf_pts    - The number of points on the surface of the star to simulate.
+    do_bootstrap    - If true, returns uncertainty on jitter by calling the
+                     bootstrap function.
+    num_spots_type  - A string that specifies the input given to num_spots. Must
+                     either be 'Number', 'Gauss Dist', 'Dist', or 'Time Series'
+    spot_contrasts  - Contrasts of spots. Every spot has the same contrast.
+    longitude_type  - Currently does nothing. 
+    n_observations  - number of observations to make per rotation
+    return_full_data - Bool. If true, return all the measurements, not just 
+                       summary statistics. Default false. 
+    suppress_output - Bool. Defaults to true. Disables tqdm output. Users not on
+                      computing clusters should set this to be false.
+    ---------------------------------------------------------------------------
+    Returns a dict containing the results
+    ---------------------------------------------------------------------------
+    # TODO:
+         - Allow for contrast distributions
+         - Allow for different longitude types (such as 'clumpy')
+    ===========================================================================
+    '''
+    # this is here because of dumb heritage reasons. 
+    obs_phi = np.cos(obs_phi)
+    if n_observations == 1:
+        raise ValueError("Known bug hits when n_observations = 1. Increase it to atleast 2.")
+
+    
+    if num_spots_type in ['Number', 'Dist', 'Time Series']:
+        if not np.all(np.mod(num_spots, 1) == 0):
+            raise ValueError("With the given num_spot_type, all values must be integers, or integer-like")
+
+    
+    # CHECK RADII INPUTS AND MAKE CUSTOM RADII FUNCTION
+    if not np.isclose(np.sum(radii_probs),  1):
+        raise ValueError("Sum of probabilities must = 1")
+    elif len(radii_probs) != len(radii_method):
+        raise ValueError("Radii method list and radii probs must be the same size")
+    else:
+        custom_radii_function = custom_radii_method_builder(radii_method, radii_probs)
+    
+    
+    # CHECK LATITUDE INPUTS AND MAKE CUSTOM LATITUDE FUNCTION
+    custom_latitude_fn = custom_latitude_dist_builder(latitude_method)
+    
+    # BUILD OBSERVATION PIPELINE
+    # CHECK SPOT INPUT TYPE AND MAKE SPOT NUMBER FUNCTION
+    xs = np.array([])
+    ys = np.array([])
+    
+    if num_spots_type == 'Number':
+        if n_rotations is None:
+            raise ValueError("Specify number of rotations")
+
+        for i in tqdm(range(n_rotations), desc = 'Simulating Star...', disable=suppress_output):
+            n_spots     = num_spots # this is a dumb variable name...
+            if n_spots < 0:
+                print('n_spots requested is negative. Setting to zero instead...')
+                n_spots = 0
+            radii       = custom_radii_function(n_spots)
+            spot_phis   = custom_latitude_fn(n_spots) * np.pi/180
+            spot_thetas = np.random.uniform(low = 0, high = 2*np.pi, size = n_spots)
+            contrasts   = spot_contrasts*np.ones(np.shape(radii))
+
+            _, clean_data, _ = get_data(radii, spot_thetas, spot_phis, contrasts, obs_phi,
+                               n_observations = n_observations , num_pts = num_surf_pts,
+                               verbose = False)
+
+            x = clean_data[:n_observations]
+            y = clean_data[n_observations:]
+            xs = np.concatenate((xs, x))
+            ys = np.concatenate((ys, y))
+            
+    elif num_spots_type == 'Gauss Dist':
+        if n_rotations is None:
+            raise ValueError("Specify number of rotations")
+            
+        # Implies user has given a mean and std
+        for i in tqdm(range(n_rotations), desc = 'Simulating Star...', disable=suppress_output):
+            n_mean = num_spots[0]
+            n_std  = num_spots[1]
+            n_spots = int(np.random.normal(loc = n_mean, scale = n_std, size = 1))
+            if n_spots < 0:
+                print('n_spots requested is negative. Setting to zero instead...')
+                n_spots = 0
+
+            radii       = custom_radii_function(n_spots)
+            spot_phis   = custom_latitude_fn(n_spots) * np.pi/180
+            spot_thetas = np.random.uniform(low = 0, high = 2*np.pi, size = n_spots)
+            contrasts   = spot_contrasts*np.ones(np.shape(radii))
+
+            _, clean_data, _ = get_data(radii, spot_thetas, spot_phis, contrasts, obs_phi,
+                               n_observations = n_observations , num_pts = num_surf_pts,
+                               verbose = False)
+
+            x = clean_data[:n_observations]
+            y = clean_data[n_observations:]
+            xs = np.concatenate((xs, x))
+            ys = np.concatenate((ys, y))
+            
+    elif num_spots_type == 'Dist':
+        if n_rotations is None:
+            raise ValueError("Specify number of rotations")
+            
+        # Implies user has given a distribution to sample from
+        for i in tqdm(range(n_rotations), desc = 'Simulating Star...', disable=suppress_output):
+            if n_spots < 0:
+                print('n_spots requested is negative. Setting to zero instead...')
+                n_spots = 0
+
+            n_spots = np.random.choice(num_spots)
+            radii       = custom_radii_function(n_spots)
+            spot_phis   = custom_latitude_fn(n_spots) * np.pi/180
+            spot_thetas = np.random.uniform(low = 0, high = 2*np.pi, size = n_spots)
+            contrasts   = spot_contrasts*np.ones(np.shape(radii))
+
+            _, clean_data, _ = get_data(radii, spot_thetas, spot_phis, contrasts, obs_phi,
+                               n_observations = n_observations , num_pts = num_surf_pts,
+                               verbose = False)
+
+            x = clean_data[:n_observations]
+            y = clean_data[n_observations:]
+            xs = np.concatenate((xs, x))
+            ys = np.concatenate((ys, y))
+    
+    elif num_spots_type == 'Time Series':
+        if n_rotations is not None:
+            print("Specified rotation number will be ignored, as num_spots_type is 'Time Series'")
+        # User has given a time series to follow
+        for n_spots in tqdm(num_spots, desc = 'Simulating Star...', disable=suppress_output):
+            if n_spots < 0:
+                print('n_spots requested is negative. Setting to zero instead...')
+                n_spots = 0
+
+            radii       = custom_radii_function(n_spots)
+            spot_phis   = custom_latitude_fn(n_spots) * np.pi/180
+            spot_thetas = np.random.uniform(low = 0, high = 2*np.pi, size = n_spots)
+            contrasts   = spot_contrasts*np.ones(np.shape(radii))
+
+            _, clean_data, _ = get_data(radii, spot_thetas, spot_phis, contrasts, obs_phi,
+                               n_observations = n_observations , num_pts = num_surf_pts,
+                               verbose = False)
+
+            x = clean_data[:n_observations]
+            y = clean_data[n_observations:]
+            xs = np.concatenate((xs, x))
+            ys = np.concatenate((ys, y))
+    else:
+        raise ValueError('''
+        num_spot_types must be either 'Number', 'Gauss Dist', 'Dist', or 
+        'Time Series'. 
+        ''')
+
+    # DO BOOTSTRAPPING
+    #                   v convert to mR_\odot
+    xs_std = np.std(xs*1000)
+    ys_std = np.std(ys*1000)
+
+    result = {'xs_std' : xs_std,
+              'ys_std' : ys_std}
+  
+    if do_bootstrap == True: 
+        xs_std_err, xs_std_ci = bootstrap(xs*1000, return_CI = True, 
+                                          suppress_output = suppress_output)
+        ys_std_err, ys_std_ci = bootstrap(ys*1000, return_CI = True,
+                                          suppress_output = suppress_output)
+
+        result['xs_std_err'] = xs_std_err
+        result['ys_std_err'] = ys_std_err
+
+        result['xs_std_ci'] = xs_std_ci
+        result['ys_std_ci'] = ys_std_ci
+
+    if return_full_data == True:
+        result['all_xs'] = xs
+        result['all_ys'] = ys
+
+    return result
+            
+        
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    
+                      
