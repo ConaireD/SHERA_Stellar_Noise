@@ -34,6 +34,8 @@ import numpy as np
 ####################
 # Speed increasing #
 ####################
+from multiprocessing import Pool
+import functools
 from numba import jit
 # Note, the first call of a function will take longer than subsequent calls
 # The functions here are not completely optimised. Some functions would
@@ -603,7 +605,7 @@ def get_spot_sizes(n, reject_small = True, method = 'Nagovitsyn', scale = 1,
     else:
         if mean or sigma == None:
             print('Either choose a method, or specify a mean and sigma for a log-normal dist')
-        
+
     areas = np.random.lognormal(mean = mean, sigma = sigma, size = n)
     radii_radians = MSH_to_input_radii(areas) * scale
     
@@ -611,7 +613,7 @@ def get_spot_sizes(n, reject_small = True, method = 'Nagovitsyn', scale = 1,
         radii_radians = radii_radians[radii_radians >= 0.02] 
     
     return radii_radians
-        
+
 def spot_butterfly_distribution(size, mean = None, sigma = None):
     '''
     ===========================================================================
@@ -992,7 +994,7 @@ def make_observations(n_rotations, num_spots, radii_method, radii_probs,
             if n_spots < 0:
                 print('n_spots requested is negative. Setting to zero instead...')
                 n_spots = 0
-
+            n_spots = int(n_spots) # cast to int
             radii       = custom_radii_function(n_spots)
             spot_phis   = custom_latitude_fn(n_spots) * np.pi/180
             spot_thetas = np.random.uniform(low = 0, high = 2*np.pi, size = n_spots)
@@ -1039,7 +1041,116 @@ def make_observations(n_rotations, num_spots, radii_method, radii_probs,
     return result
             
         
+def process_single_rotation(args):
+    """Helper function to process a single rotation for parallel processing"""
+    n_spots, radii_method, radii_probs, latitude_method, obs_phi, n_observations, num_surf_pts, spot_contrasts = args
+    
+    # Build the custom functions inside the worker process
+    custom_radii_function = custom_radii_method_builder(radii_method, radii_probs)
+    custom_latitude_fn = custom_latitude_dist_builder(latitude_method)
+    
+    if n_spots < 0:
+        print('n_spots requested is negative. Setting to zero instead...')
+        n_spots = 0
+    
+    n_spots = int(n_spots)
+    radii = custom_radii_function(n_spots)
+    spot_phis = custom_latitude_fn(n_spots) * np.pi/180
+    spot_thetas = np.random.uniform(low=0, high=2*np.pi, size=n_spots)
+    contrasts = spot_contrasts * np.ones(np.shape(radii))
+    
+    _, clean_data, _ = get_data(radii, spot_thetas, spot_phis, contrasts, obs_phi,
+                               n_observations=n_observations, num_pts=num_surf_pts,
+                               verbose=False)
+    
+    x = clean_data[:n_observations]
+    y = clean_data[n_observations:]
+    return x, y
 
+def make_observations_parallel(n_rotations, num_spots, radii_method, radii_probs,
+                             latitude_method, obs_phi, num_spots_type='Number',
+                             spot_contrasts=0.7, num_surf_pts=350**2,
+                             do_bootstrap=True, longitude_type='Random',
+                             n_observations=10, return_full_data=False,
+                             suppress_output=True, n_processes=None):
+    """
+    Parallelized version of make_observations function.
+    Additional parameter:
+    n_processes: Number of processes to use. If None, uses all available CPU cores.
+    """
+    obs_phi = np.cos(obs_phi)
+    if n_observations == 1:
+        raise ValueError("Known bug hits when n_observations = 1. Increase it to at least 2.")
+    
+    if num_spots_type in ['Number', 'Dist', 'Time Series']:
+        if not np.all(np.mod(num_spots, 1) == 0):
+            raise ValueError("With the given num_spot_type, all values must be integers, or integer-like")
+    
+    # Check radii inputs
+    if not np.isclose(np.sum(radii_probs), 1):
+        raise ValueError("Sum of probabilities must = 1")
+    elif len(radii_probs) != len(radii_method):
+        raise ValueError("Radii method list and radii probs must be the same size")
+    
+    # Prepare data for parallel processing
+    if num_spots_type == 'Number':
+        if n_rotations is None:
+            raise ValueError("Specify number of rotations")
+        spot_numbers = [num_spots] * n_rotations
+    elif num_spots_type == 'Gauss Dist':
+        if n_rotations is None:
+            raise ValueError("Specify number of rotations")
+        n_mean, n_std = num_spots
+        spot_numbers = np.random.normal(loc=n_mean, scale=n_std, size=n_rotations)
+    elif num_spots_type == 'Dist':
+        if n_rotations is None:
+            raise ValueError("Specify number of rotations")
+        spot_numbers = np.random.choice(num_spots, size=n_rotations)
+    elif num_spots_type == 'Time Series':
+        spot_numbers = num_spots
+    else:
+        raise ValueError("num_spot_types must be either 'Number', 'Gauss Dist', 'Dist', or 'Time Series'")
+    
+    # Create arguments for parallel processing
+    process_args = [(n_spots, radii_method, radii_probs, latitude_method, obs_phi,
+                    n_observations, num_surf_pts, spot_contrasts)
+                   for n_spots in spot_numbers]
+    
+    # Process in parallel
+    with Pool(processes=n_processes) as pool:
+        if not suppress_output:
+            results = list(tqdm(pool.imap(process_single_rotation, process_args),
+                              total=len(process_args),
+                              desc='Simulating Star...'))
+        else:
+            results = pool.map(process_single_rotation, process_args)
+    
+    # Combine results
+    xs = np.concatenate([x for x, _ in results])
+    ys = np.concatenate([y for _, y in results])
+    
+    # Calculate statistics
+    xs_std = np.std(xs * 1000)
+    ys_std = np.std(ys * 1000)
+    
+    result = {'xs_std': xs_std, 'ys_std': ys_std}
+    
+    if do_bootstrap:
+        xs_std_err, xs_std_ci = bootstrap(xs * 1000, return_CI=True,
+                                        suppress_output=suppress_output)
+        ys_std_err, ys_std_ci = bootstrap(ys * 1000, return_CI=True,
+                                        suppress_output=suppress_output)
+        
+        result['xs_std_err'] = xs_std_err
+        result['ys_std_err'] = ys_std_err
+        result['xs_std_ci'] = xs_std_ci
+        result['ys_std_ci'] = ys_std_ci
+    
+    if return_full_data:
+        result['all_xs'] = xs
+        result['all_ys'] = ys
+    
+    return result
 
 
 
