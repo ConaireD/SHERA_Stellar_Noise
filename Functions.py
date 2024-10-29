@@ -600,12 +600,12 @@ def get_spot_sizes(n, reject_small = True, method = 'Nagovitsyn', scale = 1,
         
     elif method == 'Baumann Group Snapshot':
         mean  = np.log(58.6)
-        sigma = np.log(2.49)
+        sigma = np.log(2.49)        
         
     else:
         if mean or sigma == None:
             print('Either choose a method, or specify a mean and sigma for a log-normal dist')
-
+        
     areas = np.random.lognormal(mean = mean, sigma = sigma, size = n)
     radii_radians = MSH_to_input_radii(areas) * scale
     
@@ -613,7 +613,7 @@ def get_spot_sizes(n, reject_small = True, method = 'Nagovitsyn', scale = 1,
         radii_radians = radii_radians[radii_radians >= 0.02] 
     
     return radii_radians
-
+        
 def spot_butterfly_distribution(size, mean = None, sigma = None):
     '''
     ===========================================================================
@@ -658,11 +658,15 @@ def spot_latitude_selection(size, method = 'butterfly', mean = None, sigma = Non
     ---------------------------------------------------------------------------
     method - must be either 'butterfly' or 'uniform', which will call
              'spot_butterfly_distribution' and 'spot_latitude_distribution' 
-             functions respectively.
+             functions respectively. If input is 'solar butterfly', it will
+             return butterfly with some modified parameters that match jitter
+             estimates. 
     ===========================================================================
     '''
     if method == 'butterfly':
         return spot_butterfly_distribution(size, mean, sigma)
+    elif method == 'solar butterfly':
+        return spot_butterfly_distribution(size, mean = 25, sigma = 6)
     elif method == 'uniform':
         if mean != None or sigma != None:
             print('Warning: Uniform method does not take a mean or sigma argument')
@@ -705,7 +709,8 @@ def bootstrap(data, n_boots = 10000, c_level = 0.95, return_CI = False, suppress
     else:
         return std_error
 
-def custom_radii_method_builder(radii_method_ls, radii_probs):
+def custom_radii_method_builder(radii_method_ls, radii_probs, 
+                                return_radii_method_flag = False):
     '''
     ===========================================================================
     A function that returns a custom get_spot_sizes function.
@@ -717,6 +722,12 @@ def custom_radii_method_builder(radii_method_ls, radii_probs):
                       and if length 4, must be of the form
                       (reject_small, mean, std, scale).
     radii_probs     - An array of probabilities for each method. Must sum to 1. 
+    return_radii_method_flag
+                    - A bool, default False, that if True will make 
+                      custom_radii_method return the index of the method chosen.
+                      To be used in conjunction with a non-None spot_ratio in
+                      make_observations
+                      
     ---------------------------------------------------------------------------
     Note: Used in the make_observation function.
     ===========================================================================
@@ -741,21 +752,21 @@ def custom_radii_method_builder(radii_method_ls, radii_probs):
                 # decode method input
                 if type(temp_radii_method) == str:
                     radii = get_spot_sizes(n_spots, method = temp_radii_method)
-                    return radii
+                    return (radii, i) if return_radii_method_flag else radii
 
                 elif (type(temp_radii_method) == tuple) &  (len(temp_radii_method) == 3):
                     method, reject_small, scale = temp_radii_method
                     radii = get_spot_sizes(n_spots, method = method,
                                            reject_small = reject_small,
                                            scale = scale)
-                    return radii
+                    return (radii, i) if return_radii_method_flag else radii
 
                 elif (type(temp_radii_method) == tuple) &  (len(temp_radii_method) == 4):
                     reject_small, mean, std, scale = temp_radii_method
                     radii = get_spot_sizes(n_spots, reject_small = reject_small,
                                            mean = mean, sigma = std,
                                            scale = scale)
-                    return radii
+                    return (radii, i) if return_radii_method_flag else radii
 
                 else:
                     raise ValueError('Error in radii_method construction')
@@ -783,9 +794,13 @@ def custom_latitude_dist_builder(latitude_method):
                 
             elif latitude_method[0] == 'uniform':
                 # user wants to use uniform dist
-                
                 def custom_lat_fn(n_spots):
                     return spot_latitude_selection(n_spots, method = 'uniform')
+
+            elif latitude_method[0] == 'solar butterfly':
+                # user wants to use uniform dist
+                def custom_lat_fn(n_spots):
+                    return spot_latitude_selection(n_spots, method = 'solar butterfly')
 
             else:
                 raise ValueError('''
@@ -802,7 +817,7 @@ def custom_latitude_dist_builder(latitude_method):
         else:
             method = latitude_method[0]
             params = latitude_method[1]
-            if method == 'butterfly':
+            if method == 'butterfly' or method == 'solar butterfly':
                 try:
                     l_mean = params[0]
                     l_std  = params[1]
@@ -810,7 +825,7 @@ def custom_latitude_dist_builder(latitude_method):
                     
                     def custom_lat_fn(n_spots):
                         return spot_latitude_selection(n_spots,
-                                                       method = 'butterfly',
+                                                       method = method,
                                                        mean = l_mean,
                                                        sigma= l_std)
 
@@ -833,7 +848,8 @@ def make_observations(n_rotations, num_spots, radii_method, radii_probs,
                       latitude_method, obs_phi, num_surf_pts = 350**2, do_bootstrap = True,
                       num_spots_type = 'Number', spot_contrasts = 0.7, 
                       longitude_type = 'Random', n_observations = 10, 
-                      return_full_data = False, suppress_output = True):
+                      return_full_data = False, suppress_output = True,
+                      spot_ratio = None):
     '''
     ===========================================================================
     A single large flexible function that wraps many other functions that 
@@ -875,6 +891,8 @@ def make_observations(n_rotations, num_spots, radii_method, radii_probs,
                        summary statistics. Default false. 
     suppress_output - Bool. Defaults to true. Disables tqdm output. Users not on
                       computing clusters should set this to be false.
+    spot_ratio      - if not None, when given will modify num_spots on a per method
+                      basis. See solar special case for details.
     ---------------------------------------------------------------------------
     Returns a dict containing the results
     ---------------------------------------------------------------------------
@@ -885,6 +903,36 @@ def make_observations(n_rotations, num_spots, radii_method, radii_probs,
     '''
     # this is here because of dumb heritage reasons. 
     obs_phi = np.cos(obs_phi)
+
+    ################
+    # Special Case #
+    ################
+    if radii_method == 'solar':
+        if latitude_method != 'solar butterfly':
+            print('''
+            Warning! Latitude method was not "solar butterfly", method will
+            be changed to "solar butterfly".
+            ''')
+            
+        return make_observations(n_rotations, num_spots,
+                                 radii_method = ['Nagovitsyn', 'Baumann Group Max'],
+                                 radii_probs = np.array([0.15, 0.85]),
+                                 latitude_method = ['solar butterfly'],
+                                 obs_phi = obs_phi, num_surf_pts = num_surf_pts,
+                                 do_bootstrap = do_bootstrap, 
+                                 num_spots_type = num_spots_type,
+                                 spot_contrasts = spot_contrasts,
+                                 longitude_type = longitude_type,
+                                 n_observations = n_observations,
+                                 return_full_data = return_full_data, 
+                                 suppress_output = suppress_output, 
+                                 spot_ratio = np.array([3/5, 1]))
+
+    if spot_ratio is not None:
+        return_radii_method_flag = True
+    else:
+        return_radii_method_flag = False
+    
     if n_observations == 1:
         raise ValueError("Known bug hits when n_observations = 1. Increase it to atleast 2.")
 
@@ -900,7 +948,9 @@ def make_observations(n_rotations, num_spots, radii_method, radii_probs,
     elif len(radii_probs) != len(radii_method):
         raise ValueError("Radii method list and radii probs must be the same size")
     else:
-        custom_radii_function = custom_radii_method_builder(radii_method, radii_probs)
+        custom_radii_function = custom_radii_method_builder(radii_method,
+                                                            radii_probs,
+                                                            return_radii_method_flag)
     
     
     # CHECK LATITUDE INPUTS AND MAKE CUSTOM LATITUDE FUNCTION
@@ -921,6 +971,12 @@ def make_observations(n_rotations, num_spots, radii_method, radii_probs,
                 print('n_spots requested is negative. Setting to zero instead...')
                 n_spots = 0
             radii       = custom_radii_function(n_spots)
+            if return_radii_method_flag == True:
+                # if true, modulates the number of spots by method. 
+                radii, idx = radii
+                n_spots = int(spot_ratio[idx]*n_spots)
+                radii = radii[:n_spots]
+                
             spot_phis   = custom_latitude_fn(n_spots) * np.pi/180
             spot_thetas = np.random.uniform(low = 0, high = 2*np.pi, size = n_spots)
             contrasts   = spot_contrasts*np.ones(np.shape(radii))
@@ -948,6 +1004,11 @@ def make_observations(n_rotations, num_spots, radii_method, radii_probs,
                 n_spots = 0
 
             radii       = custom_radii_function(n_spots)
+            if return_radii_method_flag == True:
+                # if true, modulates the number of spots by method. 
+                radii, idx = radii
+                n_spots = int(spot_ratio[idx]*n_spots)
+                radii = radii[:n_spots]
             spot_phis   = custom_latitude_fn(n_spots) * np.pi/180
             spot_thetas = np.random.uniform(low = 0, high = 2*np.pi, size = n_spots)
             contrasts   = spot_contrasts*np.ones(np.shape(radii))
@@ -973,6 +1034,11 @@ def make_observations(n_rotations, num_spots, radii_method, radii_probs,
 
             n_spots = np.random.choice(num_spots)
             radii       = custom_radii_function(n_spots)
+            if return_radii_method_flag == True:
+                # if true, modulates the number of spots by method. 
+                radii, idx = radii
+                n_spots = int(spot_ratio[idx]*n_spots)
+                radii = radii[:n_spots]
             spot_phis   = custom_latitude_fn(n_spots) * np.pi/180
             spot_thetas = np.random.uniform(low = 0, high = 2*np.pi, size = n_spots)
             contrasts   = spot_contrasts*np.ones(np.shape(radii))
@@ -994,8 +1060,13 @@ def make_observations(n_rotations, num_spots, radii_method, radii_probs,
             if n_spots < 0:
                 print('n_spots requested is negative. Setting to zero instead...')
                 n_spots = 0
-            n_spots = int(n_spots) # cast to int
+
             radii       = custom_radii_function(n_spots)
+            if return_radii_method_flag == True:
+                # if true, modulates the number of spots by method. 
+                radii, idx = radii
+                n_spots = int(spot_ratio[idx]*n_spots)
+                radii = radii[:n_spots]
             spot_phis   = custom_latitude_fn(n_spots) * np.pi/180
             spot_thetas = np.random.uniform(low = 0, high = 2*np.pi, size = n_spots)
             contrasts   = spot_contrasts*np.ones(np.shape(radii))
@@ -1040,13 +1111,18 @@ def make_observations(n_rotations, num_spots, radii_method, radii_probs,
 
     return result
             
-        
+
 def process_single_rotation(args):
     """Helper function to process a single rotation for parallel processing"""
-    n_spots, radii_method, radii_probs, latitude_method, obs_phi, n_observations, num_surf_pts, spot_contrasts = args
+    n_spots, radii_method, radii_probs, latitude_method, obs_phi, n_observations, num_surf_pts, spot_contrasts, spot_ratio = args
     
+    if spot_ratio is not None:
+        return_radii_method_flag = True
+    else:
+        return_radii_method_flag = False
+
     # Build the custom functions inside the worker process
-    custom_radii_function = custom_radii_method_builder(radii_method, radii_probs)
+    custom_radii_function = custom_radii_method_builder(radii_method, radii_probs, return_radii_method_flag)
     custom_latitude_fn = custom_latitude_dist_builder(latitude_method)
     
     if n_spots < 0:
@@ -1054,7 +1130,13 @@ def process_single_rotation(args):
         n_spots = 0
     
     n_spots = int(n_spots)
-    radii = custom_radii_function(n_spots)
+    radii   = custom_radii_function(n_spots)
+    
+    if return_radii_method_flag == True:
+        # if true, modulates the number of spots by method. 
+        radii, idx = radii
+        n_spots = int(spot_ratio[idx]*n_spots)
+        radii = radii[:n_spots]
     spot_phis = custom_latitude_fn(n_spots) * np.pi/180
     spot_thetas = np.random.uniform(low=0, high=2*np.pi, size=n_spots)
     contrasts = spot_contrasts * np.ones(np.shape(radii))
@@ -1067,12 +1149,13 @@ def process_single_rotation(args):
     y = clean_data[n_observations:]
     return x, y
 
+
 def make_observations_parallel(n_rotations, num_spots, radii_method, radii_probs,
                              latitude_method, obs_phi, num_spots_type='Number',
                              spot_contrasts=0.7, num_surf_pts=350**2,
                              do_bootstrap=True, longitude_type='Random',
                              n_observations=10, return_full_data=False,
-                             suppress_output=True, n_processes=None):
+                             suppress_output=True, spot_ratio = None, n_processes=None):
     """
     ===========================================================================
     Parallelized version of make_observations function.
@@ -1085,6 +1168,35 @@ def make_observations_parallel(n_rotations, num_spots, radii_method, radii_probs
     ===========================================================================
     """
     obs_phi = np.cos(obs_phi)
+
+    ################
+    # Special Case #
+    ################
+    if radii_method == 'solar':
+        if latitude_method != 'solar butterfly':
+            print('''
+            Warning! Latitude method was not "solar butterfly", method will
+            be changed to "solar butterfly".
+            ''')
+            
+        return make_observations_parallel(n_rotations, num_spots,
+                                 radii_method = ['Nagovitsyn', 'Baumann Group Max'],
+                                 radii_probs = np.array([0.15, 0.85]),
+                                 latitude_method = ['solar butterfly'],
+                                 obs_phi = obs_phi, num_surf_pts = num_surf_pts,
+                                 do_bootstrap = do_bootstrap, 
+                                 num_spots_type = num_spots_type,
+                                 spot_contrasts = spot_contrasts,
+                                 longitude_type = longitude_type,
+                                 n_observations = n_observations,
+                                 return_full_data = return_full_data, 
+                                 suppress_output = suppress_output, 
+                                 spot_ratio = np.array([3/5, 1]),
+                                 n_processes=n_processes)
+
+
+
+    
     if n_observations == 1:
         raise ValueError("Known bug hits when n_observations = 1. Increase it to at least 2.")
     
@@ -1119,7 +1231,7 @@ def make_observations_parallel(n_rotations, num_spots, radii_method, radii_probs
     
     # Create arguments for parallel processing
     process_args = [(n_spots, radii_method, radii_probs, latitude_method, obs_phi,
-                    n_observations, num_surf_pts, spot_contrasts)
+                    n_observations, num_surf_pts, spot_contrasts, spot_ratio)
                    for n_spots in spot_numbers]
     
     # Process in parallel
