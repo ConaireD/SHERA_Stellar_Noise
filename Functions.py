@@ -49,6 +49,7 @@ import matplotlib.pyplot as plt
 #################
 # Nice to haves #
 #################
+import os
 import warnings
 warnings.filterwarnings('ignore')
 import timeit
@@ -649,7 +650,9 @@ def spot_uniform_distribution(size):
     I.e. latitudes near the equator are more likely than higher latitudes
     ===========================================================================
     '''
-    return np.arccos(np.random.uniform(low = -1, high = 1, size = size))
+    a = np.arccos(np.random.uniform(low = -1, high = 1, size = size))
+
+    return a
 
 def spot_latitude_selection(size, method = 'butterfly', mean = None, sigma = None):
     '''
@@ -784,6 +787,7 @@ def custom_latitude_dist_builder(latitude_method):
     hopefully allow for better expansion of latitudes if need be.
     ===========================================================================
     '''
+    
 
     if len(latitude_method) == 1:
         if type(latitude_method[0]) == str:
@@ -795,6 +799,7 @@ def custom_latitude_dist_builder(latitude_method):
             elif latitude_method[0] == 'uniform':
                 # user wants to use uniform dist
                 def custom_lat_fn(n_spots):
+
                     return spot_latitude_selection(n_spots, method = 'uniform')
 
             elif latitude_method[0] == 'solar butterfly':
@@ -903,7 +908,6 @@ def make_observations(n_rotations, num_spots, radii_method, radii_probs,
     '''
     # this is here because of dumb heritage reasons. 
     obs_phi = np.cos(obs_phi)
-
     ################
     # Special Case #
     ################
@@ -951,11 +955,12 @@ def make_observations(n_rotations, num_spots, radii_method, radii_probs,
         custom_radii_function = custom_radii_method_builder(radii_method,
                                                             radii_probs,
                                                             return_radii_method_flag)
+
     
     
     # CHECK LATITUDE INPUTS AND MAKE CUSTOM LATITUDE FUNCTION
     custom_latitude_fn = custom_latitude_dist_builder(latitude_method)
-    
+
     # BUILD OBSERVATION PIPELINE
     # CHECK SPOT INPUT TYPE AND MAKE SPOT NUMBER FUNCTION
     xs = np.array([])
@@ -991,6 +996,7 @@ def make_observations(n_rotations, num_spots, radii_method, radii_probs,
             ys = np.concatenate((ys, y))
             
     elif num_spots_type == 'Gauss Dist':
+
         if n_rotations is None:
             raise ValueError("Specify number of rotations")
             
@@ -1002,17 +1008,17 @@ def make_observations(n_rotations, num_spots, radii_method, radii_probs,
             if n_spots < 0:
                 print('n_spots requested is negative. Setting to zero instead...')
                 n_spots = 0
-
             radii       = custom_radii_function(n_spots)
+
             if return_radii_method_flag == True:
                 # if true, modulates the number of spots by method. 
                 radii, idx = radii
                 n_spots = int(spot_ratio[idx]*n_spots)
                 radii = radii[:n_spots]
             spot_phis   = custom_latitude_fn(n_spots) * np.pi/180
+
             spot_thetas = np.random.uniform(low = 0, high = 2*np.pi, size = n_spots)
             contrasts   = spot_contrasts*np.ones(np.shape(radii))
-
             _, clean_data, _ = get_data(radii, spot_thetas, spot_phis, contrasts, obs_phi,
                                n_observations = n_observations , num_pts = num_surf_pts,
                                verbose = False)
@@ -1115,6 +1121,9 @@ def make_observations(n_rotations, num_spots, radii_method, radii_probs,
 def process_single_rotation(args):
     """Helper function to process a single rotation for parallel processing"""
     n_spots, radii_method, radii_probs, latitude_method, obs_phi, n_observations, num_surf_pts, spot_contrasts, spot_ratio = args
+
+    # set seed
+    np.random.seed(np.random.seed(os.getpid()))
     
     if spot_ratio is not None:
         return_radii_method_flag = True
