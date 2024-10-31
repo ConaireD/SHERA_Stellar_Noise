@@ -555,7 +555,7 @@ def spot_decay_logNormal(area, time, timestep = 30):
     new_area = new_area**2
     return new_area.T
 
-@jit()
+# @jit()
 def get_spot_sizes(n, reject_small = True, method = 'Nagovitsyn', scale = 1,
                    mean = None, sigma = None):
     '''
@@ -606,8 +606,8 @@ def get_spot_sizes(n, reject_small = True, method = 'Nagovitsyn', scale = 1,
     else:
         if mean or sigma == None:
             print('Either choose a method, or specify a mean and sigma for a log-normal dist')
-        
-    areas = np.random.lognormal(mean = mean, sigma = sigma, size = n)
+
+    areas = np.random.lognormal(mean = mean, sigma = sigma, size = int(n))
     radii_radians = MSH_to_input_radii(areas) * scale
     
     if reject_small == True:
@@ -743,7 +743,6 @@ def custom_radii_method_builder(radii_method_ls, radii_probs,
         # create a cumulative prob distribution, then choose random number
         cum_probs = np.cumsum(radii_probs)
         die_roll = np.random.uniform()
-
         # Based on random number, choose method
         # if random number is p_r, then the method chosen will be
         # p_1 + ... + p_n < p_r < p_1 + ... + p_n + p_(n+1)
@@ -752,12 +751,14 @@ def custom_radii_method_builder(radii_method_ls, radii_probs,
             # choose method
             if die_roll < threshold:
                 temp_radii_method = radii_method_ls[i]
+
                 # decode method input
                 if type(temp_radii_method) == str:
                     radii = get_spot_sizes(n_spots, method = temp_radii_method)
                     return (radii, i) if return_radii_method_flag else radii
 
                 elif (type(temp_radii_method) == tuple) &  (len(temp_radii_method) == 3):
+
                     method, reject_small, scale = temp_radii_method
                     radii = get_spot_sizes(n_spots, method = method,
                                            reject_small = reject_small,
@@ -820,8 +821,14 @@ def custom_latitude_dist_builder(latitude_method):
             (method, (**params))
             ''')
         else:
+
             method = latitude_method[0]
             params = latitude_method[1]
+            if method == ['butterfly']:
+                method = 'butterfly'
+            if method == ['solar butterfly']:
+                method = 'solar butterfly'
+                
             if method == 'butterfly' or method == 'solar butterfly':
                 try:
                     l_mean = params[0]
@@ -854,7 +861,7 @@ def make_observations(n_rotations, num_spots, radii_method, radii_probs,
                       num_spots_type = 'Number', spot_contrasts = 0.7, 
                       longitude_type = 'Random', n_observations = 10, 
                       return_full_data = False, suppress_output = True,
-                      spot_ratio = None):
+                      spot_ratio = np.array([1])):
     '''
     ===========================================================================
     A single large flexible function that wraps many other functions that 
@@ -915,11 +922,12 @@ def make_observations(n_rotations, num_spots, radii_method, radii_probs,
         if latitude_method != 'solar butterfly':
             print('''
             Warning! Latitude method was not "solar butterfly", method will
-            be changed to "solar butterfly".
+            be changed to "solar butterfly". Remember, spot ratio in this case is multiplicative
+            with the default values.
             ''')
             
         return make_observations(n_rotations, num_spots,
-                                 radii_method = ['Nagovitsyn', 'Baumann Group Max'],
+                                 radii_method = [('Nagovitsyn', True, 1), ('Baumann Group Max', False, 1)],
                                  radii_probs = np.array([0.15, 0.85]),
                                  latitude_method = ['solar butterfly'],
                                  obs_phi = obs_phi, num_surf_pts = num_surf_pts,
@@ -930,15 +938,25 @@ def make_observations(n_rotations, num_spots, radii_method, radii_probs,
                                  n_observations = n_observations,
                                  return_full_data = return_full_data, 
                                  suppress_output = suppress_output, 
-                                 spot_ratio = np.array([3/5, 1]))
+                                 spot_ratio = np.array([3/5, 1])*spot_ratio)
 
     if spot_ratio is not None:
         return_radii_method_flag = True
     else:
         return_radii_method_flag = False
+        
+    if len(spot_ratio) != len(radii_method):
+        print('Spot ratio length is not equal to radii_method length')
     
     if n_observations == 1:
         raise ValueError("Known bug hits when n_observations = 1. Increase it to atleast 2.")
+
+    if len(spot_ratio) != len(radii_method):
+        if spot_ratio == np.array([1]):
+            print('''Warning: Spot ratio length is not equal to radii_method length.
+            return_radii_method_flag will be set to false''')
+        else:
+            raise ValueError('Spot ratio length is not equal to radii_method length')
 
     
     if num_spots_type in ['Number', 'Dist', 'Time Series']:
@@ -1122,30 +1140,30 @@ def process_single_rotation(args):
     """Helper function to process a single rotation for parallel processing"""
     n_spots, radii_method, radii_probs, latitude_method, obs_phi, n_observations, num_surf_pts, spot_contrasts, spot_ratio = args
 
-    # set seed
-    np.random.seed(np.random.seed(os.getpid()))
-    
     if spot_ratio is not None:
-        return_radii_method_flag = True
+        if spot_ratio.any() != np.array([1]):
+            return_radii_method_flag = True
+        else:
+            return_radii_method_flag = False
     else:
         return_radii_method_flag = False
 
     # Build the custom functions inside the worker process
     custom_radii_function = custom_radii_method_builder(radii_method, radii_probs, return_radii_method_flag)
     custom_latitude_fn = custom_latitude_dist_builder(latitude_method)
-    
+
     if n_spots < 0:
         print('n_spots requested is negative. Setting to zero instead...')
         n_spots = 0
     
     n_spots = int(n_spots)
     radii   = custom_radii_function(n_spots)
-    
     if return_radii_method_flag == True:
         # if true, modulates the number of spots by method. 
         radii, idx = radii
         n_spots = int(spot_ratio[idx]*n_spots)
         radii = radii[:n_spots]
+
     spot_phis = custom_latitude_fn(n_spots) * np.pi/180
     spot_thetas = np.random.uniform(low=0, high=2*np.pi, size=n_spots)
     contrasts = spot_contrasts * np.ones(np.shape(radii))
@@ -1164,7 +1182,7 @@ def make_observations_parallel(n_rotations, num_spots, radii_method, radii_probs
                              spot_contrasts=0.7, num_surf_pts=350**2,
                              do_bootstrap=True, longitude_type='Random',
                              n_observations=10, return_full_data=False,
-                             suppress_output=True, spot_ratio = None, n_processes=None):
+                             suppress_output=True, spot_ratio = np.array([1]), n_processes=None):
     """
     ===========================================================================
     Parallelized version of make_observations function.
@@ -1181,7 +1199,7 @@ def make_observations_parallel(n_rotations, num_spots, radii_method, radii_probs
     ################
     # Special Case #
     ################
-    if radii_method == 'solar':
+    if radii_method == 'solar' or radii_method == ['solar']:
         if latitude_method != 'solar butterfly':
             print('''
             Warning! Latitude method was not "solar butterfly", method will
@@ -1189,7 +1207,7 @@ def make_observations_parallel(n_rotations, num_spots, radii_method, radii_probs
             ''')
             
         return make_observations_parallel(n_rotations, num_spots,
-                                 radii_method = ['Nagovitsyn', 'Baumann Group Max'],
+                                 radii_method = [('Nagovitsyn', True, 1), ('Baumann Group Max', False, 1)],
                                  radii_probs = np.array([0.15, 0.85]),
                                  latitude_method = ['solar butterfly'],
                                  obs_phi = obs_phi, num_surf_pts = num_surf_pts,
@@ -1200,12 +1218,18 @@ def make_observations_parallel(n_rotations, num_spots, radii_method, radii_probs
                                  n_observations = n_observations,
                                  return_full_data = return_full_data, 
                                  suppress_output = suppress_output, 
-                                 spot_ratio = np.array([3/5, 1]),
+                                 spot_ratio = np.array([3/5, 1])*spot_ratio,
                                  n_processes=n_processes)
 
 
 
-    
+    if len(spot_ratio) != len(radii_method):
+        if spot_ratio == np.array([1]):
+            print('''Warning: Spot ratio length is not equal to radii_method length.
+            return_radii_method_flag will be set to false''')
+        else:
+            raise ValueError('Spot ratio length is not equal to radii_method length')
+
     if n_observations == 1:
         raise ValueError("Known bug hits when n_observations = 1. Increase it to at least 2.")
     
@@ -1242,7 +1266,6 @@ def make_observations_parallel(n_rotations, num_spots, radii_method, radii_probs
     process_args = [(n_spots, radii_method, radii_probs, latitude_method, obs_phi,
                     n_observations, num_surf_pts, spot_contrasts, spot_ratio)
                    for n_spots in spot_numbers]
-    
     # Process in parallel
     with Pool(processes=n_processes) as pool:
         if not suppress_output:
@@ -1281,7 +1304,21 @@ def make_observations_parallel(n_rotations, num_spots, radii_method, radii_probs
 
 
 
-
+def extract_index(string):
+    '''
+    A sloppy function used to get a unique index from the UNSW KATANA computing cluster,
+    based off of a set of arrays I have on my personal folder there.
+    '''
+    reversed_string = string[::-1]
+    empty_string = ''
+    index = 0
+    while True:
+        is_number = reversed_string[4+index].isdigit()
+        if is_number == True:
+            empty_string += reversed_string[4+index]
+        else:
+            return int(empty_string[::-1])
+        index += 1
 
 
 
