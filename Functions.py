@@ -555,6 +555,100 @@ def spot_decay_logNormal(area, time, timestep = 30):
     new_area = new_area**2
     return new_area.T
 
+
+def get_spotted_idx(centre_phis, centre_thetas, radii, n=5e5, n_observations = 1):
+    '''
+    ===========================================================================
+    Takes in the theta/phi location of a star-spot, generates n points on the
+    surface of the star and returns only the thetas/phis of the points within
+    a circle of the spot on the surface. This circle is a circle on the sphere, 
+    and not in cartesian space. 
+    ---------------------------------------------------------------------------
+    centre_phi     - The latitude of the centre of the star-spot (radians)
+    centre_theta   - The longitude of the centre of the star-spot (radians)
+    radius         - The radius of the star-spot (radians)
+    n              - Number of points to generate on the surface of the star
+    n_observations - Number of observations during one rotation of the star
+    ---------------------------------------------------------------------------
+    Returns indicies that are in the spot.
+    ===========================================================================
+    '''
+    valid_indices = np.array([])
+    for i in range(len(radii)):
+        centre_phi = centre_phis[i]
+        centre_theta = centre_thetas[i]
+        radius = radii[i]
+        
+        thetas, phis = generate_surface_points(n, n_observations)
+    
+        ang      = np.sin(centre_phi)*np.sin(phis) +                              \
+                   np.cos(centre_phi)*np.cos(phis)*np.cos(centre_theta - thetas)
+        ang_dist = np.arccos(ang)
+        
+        valid_idx = np.where(ang_dist < radius)[0]
+        valid_indices = np.concatenate([valid_indices, valid_idx])
+    return np.unique(valid_indices)
+
+def get_light_curve(obs_phi, all_phis, all_thetas, spotted_idx, num_pts = 72, contrast = 0.7):
+    '''
+    ===========================================================================
+    Takes in a vector of spot_phi and spot_thetas, each representing single 
+    surface quanta, calculates the total flux as the star makes one full rotation.
+    NOTE: This assumes solid body rotation and no differential rotation. 
+    NOTE: This function is only to be used for a single spot. If there are
+    multiple spots, use multi_analytic_paths instead.
+    NOTE: In almost all cases, even with a single spot, you probably should use
+    multi_analytic_paths instead.
+    ---------------------------------------------------------------------------
+    obs_phi     - The observing angle from the equator in radians
+    spot_phi    - The latitude of the spot (radians)
+    spot_theta  - The longitude of the spot (radians)
+    spotted_idx - Array of indices indicating which points are spotted
+    num_pts     - The number of observations
+    contrast    - contrast of spot against background. 1 = totally black. 
+    ---------------------------------------------------------------------------
+    Returns total_flux - Array of total brightness values for each rotation point
+                         (normalised)
+    ===========================================================================
+    '''
+    obs_phi = np.arcsin(obs_phi)
+    
+    # Create meshgrid for observation angles
+    obs_theta = np.arange(0, 2*np.pi, 2*np.pi/num_pts)
+    theta_grid, phi_grid = np.meshgrid(obs_theta, all_phis)
+    
+    # Calculate the visibility angle for each point at each rotation
+    delta = np.sin(obs_phi)*np.sin(all_phis[:, np.newaxis]) + \
+            np.cos(obs_phi)*np.cos(all_phis[:, np.newaxis])*np.cos(all_thetas[:, np.newaxis] - obs_theta[np.newaxis, :] -np.pi/2)
+    
+    # Visibility mask - only include points that are facing the observer
+    visible = delta > 0
+    
+    # Calculate limb darkening for visible points
+    # Project points onto view plane
+    x_pos = np.cos(all_phis[:, np.newaxis]) * np.cos(all_thetas[:, np.newaxis] - obs_theta[np.newaxis, :])
+    y_pos = np.cos(all_phis[:, np.newaxis]) * np.sin(all_thetas[:, np.newaxis] - obs_theta[np.newaxis, :])
+    
+    # Apply limb darkening
+    dark = limb_darkening(x_pos, y_pos)
+    
+    # Initialize brightness array
+    brightness = np.ones_like(delta)
+    
+    # Apply limb darkening and visibility effects
+    brightness *= dark * delta * visible
+    
+    # Create spot mask and apply contrast
+    spot_mask = np.zeros_like(brightness, dtype=bool)
+    spot_mask[spotted_idx.astype(int)] = True
+    brightness[spot_mask] *= contrast
+    
+    # Sum total flux for each rotation angle
+    total_flux = np.sum(brightness, axis=0)[0]
+    
+    return total_flux/np.max(total_flux)
+
+
 # @jit()
 def get_spot_sizes(n, reject_small = True, method = 'Nagovitsyn', scale = 1,
                    mean = None, sigma = None):
@@ -677,7 +771,7 @@ def spot_latitude_selection(size, method = 'butterfly', mean = None, sigma = Non
     else:
         print('Invalid selection')
         
-def bootstrap(data, n_boots = 10000, c_level = 0.95, return_CI = False, suppress_output = True):
+def bootstrap(data, n_boots = 10000, c_level = 0.95, return_CI = False, suppress_output = True, method = 'std'):
     '''
     ===========================================================================
     A function to bootstrap data to estimate uncertainties
@@ -701,7 +795,15 @@ def bootstrap(data, n_boots = 10000, c_level = 0.95, return_CI = False, suppress
     # Do bootstrapping
     for i in tqdm(range(n_boots), desc = 'Bootstrapping...', disable = suppress_output):
         bootstrap_sample = np.random.choice(data, size=n_samples, replace=True)
-        bootstrap_stds[i] = np.std(bootstrap_sample)
+        if method == 'std':
+            bootstrap_stds[i] = np.std(bootstrap_sample)
+        elif method == 'median':
+            bootstrap_stds[i] = np.median(bootstrap_sample)
+        elif method == 'max':
+            bootstrap_stds[i] = np.max(bootstrap_sample)
+        else:
+            raise ValueError("method must be either 'std', 'max', or 'median'")
+
 
     std_error = np.std(bootstrap_stds)
 
@@ -913,6 +1015,7 @@ def make_observations(n_rotations, num_spots, radii_method, radii_probs,
          - Allow for different longitude types (such as 'clumpy')
     ===========================================================================
     '''
+    print('This is likely outdated. Use make_observations_parallel for full functionality')
     # this is here because of dumb heritage reasons. 
     obs_phi = np.cos(obs_phi)
     ################
@@ -1138,7 +1241,7 @@ def make_observations(n_rotations, num_spots, radii_method, radii_probs,
 
 def process_single_rotation(args):
     """Helper function to process a single rotation for parallel processing"""
-    n_spots, radii_method, radii_probs, latitude_method, obs_phi, n_observations, num_surf_pts, spot_contrasts, spot_ratio = args
+    n_spots, radii_method, radii_probs, latitude_method, obs_phi, n_observations, num_surf_pts, spot_contrasts, spot_ratio, return_Rper = args
 
     if spot_ratio is not None:
         if spot_ratio.any() != np.array([1]):
@@ -1167,14 +1270,27 @@ def process_single_rotation(args):
     spot_phis = custom_latitude_fn(n_spots) * np.pi/180
     spot_thetas = np.random.uniform(low=0, high=2*np.pi, size=n_spots)
     contrasts = spot_contrasts * np.ones(np.shape(radii))
-    
+
+    # Get astrom data
     _, clean_data, _ = get_data(radii, spot_thetas, spot_phis, contrasts, obs_phi,
                                n_observations=n_observations, num_pts=num_surf_pts,
                                verbose=False)
-    
     x = clean_data[:n_observations]
     y = clean_data[n_observations:]
-    return x, y
+
+    # get Rper
+    if return_Rper == True:
+        spotted_idx = get_spotted_idx(spot_phis, spot_thetas, radii, n = num_surf_pts)
+        _thetas, _phis = generate_surface_points(num_surf_pts, 1)
+        # arccos is needed here, as the inverse is done in make_observations_parallel
+        # but not in general
+        lc = get_light_curve(obs_phi, _phis, _thetas, spotted_idx, 
+                             100, contrast = 0.7)
+        lc_amp_ppm = np.array([(np.percentile(lc, 95) - np.percentile(lc, 5)) * 1e6])
+    
+        return x, y, lc_amp_ppm
+    else:
+        return x, y
 
 
 def make_observations_parallel(n_rotations, num_spots, radii_method, radii_probs,
@@ -1182,7 +1298,8 @@ def make_observations_parallel(n_rotations, num_spots, radii_method, radii_probs
                              spot_contrasts=0.7, num_surf_pts=350**2,
                              do_bootstrap=True, longitude_type='Random',
                              n_observations=10, return_full_data=False,
-                             suppress_output=True, spot_ratio = np.array([1]), n_processes=None):
+                             suppress_output=True, spot_ratio = np.array([1]),
+                             n_processes=None, return_Rper = False):
     """
     ===========================================================================
     Parallelized version of make_observations function.
@@ -1194,7 +1311,13 @@ def make_observations_parallel(n_rotations, num_spots, radii_method, radii_probs
     to most use cases (i.e np.std does not care about order).
     ===========================================================================
     """
-    obs_phi = np.cos(obs_phi)
+    if return_Rper == True:
+        print('''
+        Warning: By setting return_Rper = True, this will cause the code
+        execution time to increase by a factor of a few. This is because
+        this feature was a late addition and has not been optimised.
+        ''')
+
 
     ################
     # Special Case #
@@ -1219,8 +1342,11 @@ def make_observations_parallel(n_rotations, num_spots, radii_method, radii_probs
                                  return_full_data = return_full_data, 
                                  suppress_output = suppress_output, 
                                  spot_ratio = np.array([3/5, 1])*spot_ratio,
-                                 n_processes=n_processes)
+                                 n_processes=n_processes,
+                                 return_Rper = return_Rper)
 
+    # obs_phi = np.cos(obs_phi)
+    obs_phi = np.sin(obs_phi) #<---------------- ?!?!
 
 
     if len(spot_ratio) != len(radii_method):
@@ -1264,8 +1390,8 @@ def make_observations_parallel(n_rotations, num_spots, radii_method, radii_probs
     
     # Create arguments for parallel processing
     process_args = [(n_spots, radii_method, radii_probs, latitude_method, obs_phi,
-                    n_observations, num_surf_pts, spot_contrasts, spot_ratio)
-                   for n_spots in spot_numbers]
+                    n_observations, num_surf_pts, spot_contrasts, spot_ratio, return_Rper)
+                    for n_spots in spot_numbers]
     # Process in parallel
     with Pool(processes=n_processes) as pool:
         if not suppress_output:
@@ -1274,16 +1400,29 @@ def make_observations_parallel(n_rotations, num_spots, radii_method, radii_probs
                               desc='Simulating Star...'))
         else:
             results = pool.map(process_single_rotation, process_args)
-    
     # Combine results
-    xs = np.concatenate([x for x, _ in results])
-    ys = np.concatenate([y for _, y in results])
+    if return_Rper == True:
+        xs = np.concatenate([x for x, _, _ in results])
+        ys = np.concatenate([y for _, y, _ in results])
+        lc_amp_ppm_vec = np.concatenate([lc_amp_ppm for _, _, lc_amp_ppm in results])
+        
+        # Calculate statistics
+        xs_std = np.std(xs * 1000)
+        ys_std = np.std(ys * 1000)
+        Rper   = np.median(lc_amp_ppm_vec)
+        Rper_max = np.max(lc_amp_ppm_vec)
+        
+        result = {'xs_std': xs_std, 'ys_std': ys_std, 'Rper':Rper,'Rper_max':Rper_max}
+    else:
+        xs = np.concatenate([x for x, _ in results])
+        ys = np.concatenate([y for _, y in results])
     
-    # Calculate statistics
-    xs_std = np.std(xs * 1000)
-    ys_std = np.std(ys * 1000)
-    
-    result = {'xs_std': xs_std, 'ys_std': ys_std}
+        # Calculate statistics
+        xs_std = np.std(xs * 1000)
+        ys_std = np.std(ys * 1000)
+        
+        result = {'xs_std': xs_std, 'ys_std': ys_std}
+        
     
     if do_bootstrap:
         xs_std_err, xs_std_ci = bootstrap(xs * 1000, return_CI=True,
@@ -1295,6 +1434,20 @@ def make_observations_parallel(n_rotations, num_spots, radii_method, radii_probs
         result['ys_std_err'] = ys_std_err
         result['xs_std_ci'] = xs_std_ci
         result['ys_std_ci'] = ys_std_ci
+        
+        if return_Rper == True:
+            Rper_err, Rper_ci = bootstrap(lc_amp_ppm_vec, return_CI = True,
+                                          suppress_output = suppress_output,
+                                          method = 'median')
+            result['Rper_err'] = Rper_err
+            result['Rper_ci']  = Rper_ci
+
+            Rper_max_err, Rper_max_ci = bootstrap(lc_amp_ppm_vec, return_CI = True,
+                              suppress_output = suppress_output,
+                              method = 'max')
+            result['Rper_max_err'] = Rper_max_err
+            result['Rper_max_ci']  = Rper_max_ci
+
     
     if return_full_data:
         result['all_xs'] = xs
