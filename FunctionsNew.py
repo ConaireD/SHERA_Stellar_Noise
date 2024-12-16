@@ -225,12 +225,16 @@ def get_points_within_circ_on_sphere(centre_phi, centre_theta, radius, n=5e5,
     cos_centre_phi = np.cos(centre_phi)
     
     # Vectorized calculation with in-place operations to minimize memory
-    np.clip(
-        sin_centre_phi * np.sin(phis) + 
-        cos_centre_phi * np.cos(phis) * np.cos(centre_theta - thetas), 
-        -1.0, 1.0, 
-        out=cos_ang_dist
-    )
+    # np.clip(
+    #     sin_centre_phi * np.sin(phis) + 
+    #     cos_centre_phi * np.cos(phis) * np.cos(centre_theta - thetas), 
+    #     -1.0, 1.0, 
+    #     out=cos_ang_dist
+    # )
+    cos_ang_dist[:] = sin_centre_phi * np.sin(phis) + cos_centre_phi * np.cos(phis) * np.cos(centre_theta - thetas)
+    cos_ang_dist[cos_ang_dist > 1.0] = 1.0
+    cos_ang_dist[cos_ang_dist < -1.0] = -1.0
+
     
     # In-place angular distance calculation
     ang_dist = np.arccos(cos_ang_dist)
@@ -663,9 +667,14 @@ def get_spotted_idx(centre_phis, centre_thetas, radii, thetas, phis, n=5e5, n_ob
         cos_centre_theta = np.cos(centre_thetas[i])
 
         # Compute angular distance for all points
-        ang = (sin_centre_phi * sin_phis +
-               cos_centre_phi * cos_phis * np.cos(cos_centre_theta - thetas))
-        ang_dist = np.arccos(np.clip(ang, -1.0, 1.0))  # Clip for numerical stability
+        ang = sin_centre_phi * sin_phis + cos_centre_phi * cos_phis * np.cos(cos_centre_theta - thetas)
+        
+        # Clip values manually for numerical stability
+        ang[ang > 1.0] = 1.0
+        ang[ang < -1.0] = -1.0
+        
+        # Calculate angular distance
+        ang_dist = np.arccos(ang)
 
         # Update the mask for points within the radius
         valid_mask = valid_mask | (ang_dist < radii[i])  # Bitwise OR ensures 1D consistency

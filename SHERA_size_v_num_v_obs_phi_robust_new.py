@@ -9,7 +9,8 @@ from FunctionsNew import *
 
 
 
-run_index = int(sys.argv[1])
+# run_index = int(sys.argv[1])
+run_index = 500
 
 degs = np.arange(0, 91, 30)                     # Angles from 0 to 90 degrees in steps of 30
 size_multi_arr = np.sqrt(np.linspace(1, 20, 20))  # 20 points from 1 to sqrt(20)
@@ -41,7 +42,7 @@ results = make_observations_parallel(n_rotations = 1200,
                             num_spots_type = 'Dist',
                             suppress_output = True,
                             return_full_data = False, 
-                            spot_ratio = spot_ratio, n_processes = 8,
+                            spot_ratio = spot_ratio, n_processes = 1,
                             num_surf_pts = 450**2, return_Rper = True, n_observations = 100)
 
 results['obs_phi'] = obs_phi.tolist() if isinstance(obs_phi, np.ndarray) else obs_phi
